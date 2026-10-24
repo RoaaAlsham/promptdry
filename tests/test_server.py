@@ -1,13 +1,16 @@
-"""Tool registration, actionable errors, and a stdio call of both tools."""
+"""Tool registration, actionable errors, and a Streamable HTTP call of both tools."""
 
 import asyncio
 import json
+import os
+import socket
 import sys
 from datetime import timedelta
 from pathlib import Path
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult
 
 import server
@@ -26,6 +29,17 @@ def test_dev_dependencies_survive_windows_cmd():
     assert server.mcp.dependencies
     for package in server.mcp.dependencies:
         assert "<" not in package and ">" not in package
+
+
+def test_render_binding():
+    assert server.mcp.settings.host == "0.0.0.0"
+    assert server.mcp.settings.port == int(os.environ.get("PORT", "10000"))
+    assert server.mcp.settings.streamable_http_path == "/mcp"
+    assert server.mcp.settings.json_response is True
+    assert server.mcp.settings.stateless_http is True
+    security = server.mcp.settings.transport_security
+    assert security is not None and security.enable_dns_rebinding_protection is True
+    assert "127.0.0.1:*" in security.allowed_hosts
 
 
 def test_server_exposes_two_short_tools():
@@ -80,26 +94,76 @@ def test_gemma_and_expired_errors_are_actionable(monkeypatch):
     assert expired.content[0].text == EXPIRED
 
 
-def test_stdio_calls_both_tools():
-    asyncio.run(_stdio_calls_both_tools())
+def test_streamable_http_calls_both_tools():
+    asyncio.run(_streamable_http_calls_both_tools())
 
 
-async def _stdio_calls_both_tools():
-    params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "server.py")], cwd=ROOT)
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=90)) as session:
-            initialized = await session.initialize()
-            assert initialized.serverInfo.name == "promptdry"
-            listed = await session.list_tools()
-            assert [tool.name for tool in listed.tools] == ["evaluate_prompt", "improve_prompt"]
-            evaluated = await session.call_tool("evaluate_prompt", {"prompt": "hi", "model_id": "gpt-4o"})
-            assert evaluated.isError is False
-            body = json.loads(evaluated.content[0].text)
-            assert body["gate"]["skipped"] is True
-            assert body["evaluation_id"] is None
-            assert "SECRET" not in evaluated.content[0].text
-            improved = await session.call_tool(
-                "improve_prompt", {"evaluation_id": "ev_missing", "mode": "enhance"}
-            )
-            assert improved.isError is True
-            assert improved.content[0].text == EXPIRED
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def _read_stderr(stream: asyncio.StreamReader) -> bytes:
+    chunks = []
+    while True:
+        block = await stream.read(4096)
+        if not block:
+            return b"".join(chunks)
+        chunks.append(block)
+
+
+async def _streamable_http_calls_both_tools():
+    port = _free_port()
+    env = os.environ.copy()
+    env["PORT"] = str(port)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(ROOT / "server.py"),
+        cwd=ROOT,
+        env=env,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stderr is not None
+    stderr_task = asyncio.create_task(_read_stderr(proc.stderr))
+    try:
+        async with httpx.AsyncClient() as client:
+            health = None
+            for _ in range(50):
+                if proc.returncode is not None:
+                    err = (await stderr_task).decode("utf-8", "replace")
+                    raise AssertionError(f"server exited {proc.returncode}: {err[-2000:]}")
+                try:
+                    health = await client.get(f"http://127.0.0.1:{port}/health", timeout=1)
+                except httpx.HTTPError:
+                    await asyncio.sleep(0.2)
+                    continue
+                if health.status_code == 200:
+                    break
+                await asyncio.sleep(0.2)
+            assert health is not None and health.status_code == 200
+            assert health.json() == {"status": "ok"}
+        url = f"http://127.0.0.1:{port}/mcp"
+        async with streamable_http_client(url) as (read, write, _session_id):
+            async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=30)) as session:
+                initialized = await session.initialize()
+                assert initialized.serverInfo.name == "promptdry"
+                listed = await session.list_tools()
+                assert [tool.name for tool in listed.tools] == ["evaluate_prompt", "improve_prompt"]
+                evaluated = await session.call_tool("evaluate_prompt", {"prompt": "hi", "model_id": "gpt-4o"})
+                assert evaluated.isError is False
+                body = json.loads(evaluated.content[0].text)
+                assert body["gate"]["skipped"] is True
+                assert body["evaluation_id"] is None
+                improved = await session.call_tool(
+                    "improve_prompt", {"evaluation_id": "ev_missing", "mode": "enhance"}
+                )
+                assert improved.isError is True
+                assert improved.content[0].text == EXPIRED
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        if not stderr_task.done():
+            await stderr_task

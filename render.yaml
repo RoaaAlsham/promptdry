@@ -1,0 +1,19 @@
+# Render Blueprint for the streamable-http branch.
+# Connect the repo, pick this branch, and supply GEMINI_API_KEY when prompted.
+services:
+  - type: web
+    name: promptdry
+    runtime: python
+    branch: streamable-http
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.14.4"
+      - key: GEMMA_MODEL
+        value: gemma-4-26b-a4b-it
+      - key: PROMPTDRY_MIN_TOKENS
+        value: "40"
+      - key: GEMINI_API_KEY
+        sync: false

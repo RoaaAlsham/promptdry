@@ -45,49 +45,63 @@ Tests run offline. Input prompts are not logged.
 
 ## MCP server
 
-`server.py` runs a stdio FastMCP server named `promptdry` with exactly two
-tools, `evaluate_prompt` and `improve_prompt`. Their descriptions say when to
-call them. Gemma failures and a missing or expired evaluation come back as
-short tool errors. `evaluation_expired` means call `evaluate_prompt` again.
-The server loads `.env` from the project directory and does not log prompt
-text or API keys.
+This branch serves Streamable HTTP. The `main` branch keeps the stdio server
+used by Claude Desktop's local command config.
 
-Open both tools in the MCP Inspector. `mcp dev` runs the server with `uv`,
-which must be on `PATH` (`pip install uv` inside the virtualenv, then prefix
-`Scripts` as shown):
+`python server.py` listens on `0.0.0.0` and `$PORT` (default `10000`). The MCP
+endpoint is `/mcp`. `GET /health` returns `{"status":"ok"}` and does not call
+Gemma. Responses are JSON and each HTTP request is stateless; the evaluation
+cache still lives in this process for one hour. A restart or a spun-down
+Render instance drops it. Prompt text and API keys are not logged.
+
+Run it locally:
 
 ```powershell
-$env:PATH = "E:/Projects/promptdry/.venv/Scripts;$env:PATH"
-E:/Projects/promptdry/.venv/Scripts/mcp.exe dev server.py
+$env:PORT = "10000"
+.\.venv\Scripts\python.exe server.py
 ```
 
-A short prompt returns a skipped gate without calling Gemma. `improve_prompt`
-with an unknown `evaluation_id` returns `evaluation_expired`.
+Then connect a client to `http://127.0.0.1:10000/mcp`. A short prompt returns
+a skipped gate. `improve_prompt` with an unknown `evaluation_id` returns
+`evaluation_expired`.
 
-Claude Desktop reads `%APPDATA%\Claude\claude_desktop_config.json`. Use this
-server entry, then restart Claude Desktop:
+## Render
+
+`render.yaml` is a Blueprint for the `streamable-http` branch. It installs
+`requirements.txt`, starts `python server.py`, and probes `/health`. Python
+is pinned to 3.14.4. Set `GEMINI_API_KEY` in the Render dashboard when the
+Blueprint asks for it. `GEMMA_MODEL` defaults to `gemma-4-26b-a4b-it`.
+
+After deploy, the public endpoint is:
+
+`https://<your-service>.onrender.com/mcp`
+
+Render sends the service hostname in `RENDER_EXTERNAL_HOSTNAME`, and the
+server allows that host. For an extra custom domain, set
+`PROMPTDRY_ALLOWED_HOSTS` to a comma-separated list of hostnames.
+
+Claude Desktop remote server entry:
 
 ```json
 {
   "mcpServers": {
     "promptdry": {
-      "command": "E:/Projects/promptdry/.venv/Scripts/python.exe",
-      "args": ["E:/Projects/promptdry/server.py"]
+      "url": "https://promptdry.onrender.com/mcp"
     }
   }
 }
 ```
 
-`GEMINI_API_KEY` is read from `E:/Projects/promptdry/.env`.
-
-This branch speaks stdio. Streamable HTTP, prepared for Render, is on the `streamable-http` branch.
+Replace the host with the hostname Render assigns. Free instances sleep when
+idle; the first call after sleep waits for the process to start.
 
 ## Layout
 
-- `server.py`: stdio MCP entry point
+- `server.py`: Streamable HTTP MCP entry point
+- `render.yaml`: Render Blueprint for this branch
 - `promptdry/`: service package
 - `prompts/`: evaluate, reduce, enhance, both, and repair templates
-- `tests/`: offline tests
+- `tests/`: local tests
 - `examples/`: reserved for example prompts
 
 Templates are copied from `promptdry prompts.md` and use `{{PLACEHOLDER}}` variables.
