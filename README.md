@@ -1,8 +1,59 @@
 # promptdry
 
-An MCP server for estimating prompt token consumption, scoring specification,
-and offering rewrites before an agent executes a task. Implementation is in progress.
-Read PROJECT.md for constraints and CONTRACTS.md for the two planned MCP tools.
+An MCP server that dry-runs a prompt before an agent executes it. It estimates
+tokens and cost, scores how well the prompt is specified, and can rewrite it.
+`main` speaks stdio for a local desktop client. `streamable-http` serves
+[https://promptdry.onrender.com/mcp](https://promptdry.onrender.com/mcp).
+Read PROJECT.md for constraints and CONTRACTS.md for the tool results.
+
+## Core features
+
+- **`evaluate_prompt(prompt, model_id)`** counts input tokens, estimates output as low / medium / high, and prices that range when the model is known. It scores efficiency and specification from 1 to 5 and lists missing slots plus a few short issues.
+- **`improve_prompt(evaluation_id, mode, answers?)`** rewrites the original prompt. `mode` is `reduce` (fewer input tokens), `enhance` (clearer specification), or `both`.
+- Token counts and dollar amounts come from the server (tiktoken and llm-costs). Gemma does not invent them.
+- Prompts under `PROMPTDRY_MIN_TOKENS` (default 40) are skipped, and Gemma is not called.
+- A successful evaluation is cached in memory for one hour. `evaluation_expired` means call `evaluate_prompt` again.
+- Prompt text and API keys are not logged. The prompt is sent to the Gemini API for analysis, so keep secrets out of it.
+
+## How to use it
+
+Connect once, then use the two tools at the start of a new task.
+
+**Hosted connector** (`streamable-http`): in Claude, add a custom connector and set the URL to `https://promptdry.onrender.com/mcp`. That path is where the server accepts MCP requests.
+
+**Local desktop** (`main`): launch `server.py` over stdio with the project virtualenv. That branch's MCP server section has the Claude Desktop command.
+
+Then:
+
+1. Call `evaluate_prompt` with the user's message and the model id you will actually run, such as `gpt-4o`. Pass `unknown` when you do not know it.
+2. Read the pre-flight: input tokens, output range, cost range, the two scores, and the issues. If `gate.skipped` is true, continue the task. If `cost_usd` is null, pricing for that model is unavailable.
+3. Ask which to do next: proceed as written, reduce tokens, improve the specification, or both.
+4. For a rewrite, call `improve_prompt` with the `evaluation_id`. If `status` is `needs_answers`, show the questions, wait, and call again with `answers`. If `status` is `ready`, show the new prompt, the before/after token counts, and the risk, and wait for approval.
+5. Run the task with the prompt the user approved.
+
+Skip the pre-flight for a follow-up in the same task, for a slash command, and when the user writes "skip eval".
+
+## Simple demo
+
+This call was made against `https://promptdry.onrender.com/mcp` with `model_id` `gpt-4o`.
+
+Prompt:
+
+> Please write a detailed weekend city-break plan for a first-time visitor. Include a packing list, a daily itinerary, restaurant ideas, and budget tips. Repeat the important rules a few times so nothing is missed, and add extra background about why this trip should feel special and well organized.
+
+**Prompt pre-flight** — model: openai/gpt-4o
+
+- Input: 57 tokens
+- Output estimate: low 200 · medium 780 · high 3000 tokens
+- Cost estimate: low $0.0021 · medium $0.0079 · high $0.0301
+- Efficiency: 2/5 · Specification: 2/5
+- Issues: missing destination, missing budget, redundant instruction to repeat rules, vague constraints
+
+`improve_prompt` with mode `reduce` returned `ready` and cut the input from 57 tokens to 29:
+
+> Write a detailed weekend city-break plan for a first-time visitor. Include a packing list, a daily itinerary, restaurant ideas, and budget tips.
+
+The output-tier estimates stayed the same. Risk was low. Output tiers are heuristics, and a later call can produce different numbers.
 
 ## Setup (Python 3.13+)
 
@@ -74,7 +125,7 @@ Blueprint asks for it. `GEMMA_MODEL` defaults to `gemma-4-26b-a4b-it`.
 
 After deploy, the public endpoint is:
 
-`hhttps://promptdry.onrender.com`
+`https://promptdry.onrender.com/mcp`
 
 Render sends the service hostname in `RENDER_EXTERNAL_HOSTNAME`, and the
 server allows that host. For an extra custom domain, set
