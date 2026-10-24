@@ -74,7 +74,7 @@ Blueprint asks for it. `GEMMA_MODEL` defaults to `gemma-4-26b-a4b-it`.
 
 After deploy, the public endpoint is:
 
-`https://<your-service>.onrender.com/mcp`
+`hhttps://promptdry.onrender.com`
 
 Render sends the service hostname in `RENDER_EXTERNAL_HOSTNAME`, and the
 server allows that host. For an extra custom domain, set
