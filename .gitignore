@@ -1,0 +1,8 @@
+.env
+.venv/
+.venv-backup-linux/
+.python311/
+__pycache__/
+.pytest_cache/
+.venv-backup-311/
+.venv314/

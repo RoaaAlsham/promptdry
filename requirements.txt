@@ -1,0 +1,8 @@
+google-genai
+mcp[cli]>=1,<2
+tiktoken
+pydantic>=2,<3
+python-dotenv
+llm-costs
+PyYAML
+pytest
